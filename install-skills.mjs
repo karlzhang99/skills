@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * 把技能装到各编程助手的技能目录：DSH / Codex / Claude Code / WorkBuddy。
+ * 通用技能安装器：把本仓库下的技能同步到 DSH / Codex / Claude Code / WorkBuddy。
  *
- * 两种来源：
- * - 远程技能（a-stock-data、global-stock-data）：~/skills 下只放空占位目录，每次安装都从 GitHub
- *   拉到缓存目录（默认 ~/.cache/skills-src），拉完保留，下次 fetch 复用，再拆层安装；
- * - 本地技能（chanlun、westockdata 等）：直接复制 ~/skills 下的整包。
+ * 本仓库下每个子目录就是一个技能，两种形式，脚本自动识别，不写死任何技能名：
+ * - 目录里有 `git-addr`（一行 git 地址）：安装时拉到缓存目录（默认 ~/.cache/skills-src），
+ *   拉完保留，下次 fetch 复用；再从缓存同步（有 split-*.mjs 就先拆层）；
+ * - 目录里有 `SKILL.md`：本地技能包，直接复制（或 --mode link 软链到 dsh）。
  *
- * 复制是原子的（先写暂存目录再换名，失败回滚）；目标里已有的 `_*` 元数据会被保留。
+ * 用法:
+ *   node install-skills.mjs list     # 列出可导入的技能
+ *   node install-skills.mjs          # 拉取 + 同步到四家
  */
 
 import { execFile } from 'node:child_process'
@@ -19,7 +21,7 @@ import { expandHome, fail, parseFlags, parseList, pathExists, printUsage, report
 
 const run = promisify(execFile)
 
-/** 工具名 → 技能扫描根目录。 */
+/** 工具名 → 技能安装根目录。 */
 const TOOLS = {
   dsh: join(homedir(), '.dsh', 'skills'),
   codex: join(homedir(), '.codex', 'skills'),
@@ -28,14 +30,8 @@ const TOOLS = {
 }
 const DEFAULT_TARGETS = Object.keys(TOOLS)
 
-/**
- * 需要从 GitHub 现场拉取的技能。本地 ~/skills/<name> 只是空占位目录，
- * 上游仓库拉到缓存目录后再拆层安装。加新技能就在这里加一条。
- */
-const REMOTE_SKILLS = {
-  'a-stock-data': { url: 'https://github.com/simonlin1212/a-stock-data.git', branch: 'main' },
-  'global-stock-data': { url: 'https://github.com/simonlin1212/global-stock-data.git', branch: 'main' },
-}
+/** 技能目录里放这个文件表示「从 git 拉取」，内容是一行地址。 */
+const ADDRESS_FILE = 'git-addr'
 const DEFAULT_CACHE = join(homedir(), '.cache', 'skills-src')
 
 /** 复制整包时跳过的目录/文件（.git 体积大且与运行无关）。 */
@@ -45,50 +41,75 @@ const IGNORED = new Set([
 ])
 
 const USAGE = `
-用法: node ~/skills/install-skills.mjs [选项]
+用法: node install-skills.mjs <list | install> [选项]
 
-把技能装到各工具的技能目录。远程技能每次安装都从 GitHub 重新拉取一次。
+命令:
+  list               列出当前技能目录下可导入的技能（不联网）
+  install            拉取远程技能并同步到各工具（默认命令）
 
 选项:
   --targets <list>   目标工具，逗号分隔：${DEFAULT_TARGETS.join(' / ')}，或 all（默认 all）
-  --only <list>      只装这些技能（逗号分隔），默认全部
-  --root <dir>       本地技能源根目录（默认 ~/skills）
-  --cache <dir>      远程技能的拉取目录（默认 ~/.cache/skills-src，拉完保留）
+  --only <list>      只处理这些技能（逗号分隔），默认全部；不存在的技能会直接报错
+  --root <dir>       技能源根目录（默认脚本所在目录）
+  --cache <dir>      远程技能拉取目录（默认 ~/.cache/skills-src，拉完保留）
   --no-pull          不联网，直接用缓存里上次拉取的副本
-  --mode <copy|link> copy=复制目录（默认）；link=软链到源目录，只有 dsh 支持（改源即时生效）
-  --no-split         不拆层，直接安装原包（远程技能会复制缓存里的仓库）
+  --mode <copy|link> copy=复制目录（默认）；link=软链到源目录，只有本地技能 + dsh 支持
+  --no-split         不拆层，直接安装原包
   --dry-run          只打印计划，不联网、不落盘
-  --json             输出机器可读的 JSON 摘要
+  --json             输出机器可读的 JSON
   -h, --help         显示本帮助
 
-远程技能（每次安装重新拉取）:
-${Object.entries(REMOTE_SKILLS).map(([name, { url, branch }]) => `  ${name.padEnd(18)} ${url} (${branch})`).join('\n')}
+技能目录的两种形式:
+  <name>/git-addr    一行 git 地址，安装时拉取到缓存再同步
+  <name>/SKILL.md    本地技能包，直接复制
 
 目标目录:
 ${DEFAULT_TARGETS.map(name => `  ${name.padEnd(9)} ${TOOLS[name]}`).join('\n')}
 
 示例:
-  node ~/skills/install-skills.mjs
-  node ~/skills/install-skills.mjs --targets dsh
-  node ~/skills/install-skills.mjs --only chanlun,westockdata
-  node ~/skills/install-skills.mjs --no-pull --targets dsh,codex
+  node install-skills.mjs list
+  node install-skills.mjs list --json
+  node install-skills.mjs
+  node install-skills.mjs --only chanlun --targets dsh
 `
 
-const exists = pathExists
 const isRealDirectory = async path => lstat(path).then(info => info.isDirectory(), () => false)
 
 /** 目录里是否有 SKILL.md（判断是不是一个技能包）。 */
 const isSkillDir = async path => lstat(join(path, 'SKILL.md')).then(info => info.isFile(), () => false)
 
+/** 读 git-addr：没有文件返回 null；有文件但为空返回 ''。 */
+const readAddress = async dir => {
+  const file = join(dir, ADDRESS_FILE)
+  if (!(await pathExists(file))) return null
+  const lines = (await readFile(file, 'utf8'))
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '' && !line.startsWith('#'))
+  return lines[0] ?? ''
+}
+
+/** 扫描所有技能目录：有 git-addr 或 SKILL.md 的才算。 */
 const discoverSkills = async root => {
-  const entries = await readdir(root, { withFileTypes: true })
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch (error) {
+    fail(`读不了技能源目录 ${root}：${error.message}`)
+  }
   const skills = []
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-    if (await isSkillDir(join(root, entry.name))) skills.push(entry.name)
+    const dir = join(root, entry.name)
+    const address = await readAddress(dir)
+    if (address === null && !(await isSkillDir(dir))) continue
+    skills.push({ name: entry.name, dir, address })
   }
-  return skills.sort()
+  return skills.sort((a, b) => a.name.localeCompare(b.name))
 }
+
+/** 有对应的 split-*.mjs 就走拆层安装。 */
+const splitScript = (root, name) => join(root, `split-${name}.mjs`)
 
 /** 复制整包时的过滤：只要运行需要的文件。 */
 const keep = source => {
@@ -103,7 +124,7 @@ const carryOverMeta = async (target, stage) => {
   if (!(await isRealDirectory(target))) return
   for (const name of await readdir(target)) {
     if (!name.startsWith('_')) continue
-    if (await exists(join(stage, name))) continue
+    if (await pathExists(join(stage, name))) continue
     await cp(join(target, name), join(stage, name), { recursive: true })
   }
 }
@@ -120,7 +141,7 @@ const copySkill = async (source, target) => {
   await cp(source, stage, { recursive: true, filter: keep })
   await carryOverMeta(target, stage)
 
-  const existed = await exists(target)
+  const existed = await pathExists(target)
   if (existed) await rename(target, backup)
   try {
     await rename(stage, target)
@@ -166,26 +187,99 @@ const git = async args => {
   return stdout.trim()
 }
 
+const normalizeUrl = url => url.replace(/\/+$/, '').replace(/\.git$/, '')
+
+/** 仓库根不一定是技能根：根上没有 SKILL.md 时，找唯一的一级子目录。 */
+const resolveSkillRoot = async repoDir => {
+  if (await isSkillDir(repoDir)) return repoDir
+  const candidates = []
+  for (const entry of await readdir(repoDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const sub = join(repoDir, entry.name)
+    if (await isSkillDir(sub)) candidates.push(sub)
+  }
+  if (candidates.length === 1) return candidates[0]
+  if (candidates.length === 0) fail(`拉下来的仓库里找不到 SKILL.md：${repoDir}`)
+  fail(`仓库里有多个 SKILL.md，无法确定用哪个：${candidates.join(', ')}`)
+}
+
 /**
- * 把远程技能拉到缓存目录。已有克隆就 fetch + reset（每次都重新拉一次），
- * 拉完保留，不回删。
+ * 把技能拉到缓存目录。已有克隆就 fetch（每次都重新拉），拉完保留；
+ * 缓存里的 origin 地址和 git-addr 不一致时重新 clone。
  */
 const pullRemote = async (skill, cacheDir) => {
-  const { url, branch } = REMOTE_SKILLS[skill]
-  const dir = join(cacheDir, skill)
-  const cloned = await exists(join(dir, '.git'))
+  const url = skill.address
+  if (url === '') fail(`git-addr 是空的：${join(skill.dir, ADDRESS_FILE)}`)
+  const dir = join(cacheDir, skill.name)
+  const hasClone = await pathExists(join(dir, '.git'))
+  let via = hasClone ? 'update' : 'clone'
 
-  if (cloned) {
-    await git(['-C', dir, 'fetch', '--depth', '1', 'origin', branch])
-    await git(['-C', dir, 'reset', '--hard', 'FETCH_HEAD'])
+  if (hasClone) {
+    const current = await git(['-C', dir, 'remote', 'get-url', 'origin']).catch(() => '')
+    if (normalizeUrl(current) !== normalizeUrl(url)) {
+      await rm(dir, { recursive: true, force: true })
+      await mkdir(cacheDir, { recursive: true })
+      await git(['clone', '--depth', '1', '--single-branch', url, dir])
+      via = 'clone'
+    } else {
+      try {
+        await git(['-C', dir, 'fetch', '--depth', '1', 'origin', 'HEAD'])
+      } catch {
+        await git(['-C', dir, 'fetch', '--depth', '1', 'origin'])
+      }
+      await git(['-C', dir, 'reset', '--hard', 'FETCH_HEAD'])
+    }
   } else {
     await mkdir(cacheDir, { recursive: true })
     await rm(dir, { recursive: true, force: true })
-    await git(['clone', '--depth', '1', '--single-branch', '--branch', branch, url, dir])
+    await git(['clone', '--depth', '1', '--single-branch', url, dir])
   }
 
   const commit = await git(['-C', dir, 'rev-parse', '--short', 'HEAD'])
-  return { dir, source: join(dir, 'SKILL.md'), commit, via: cloned ? 'fetch' : 'clone' }
+  const source = await resolveSkillRoot(dir)
+  return { dir, source, commit, via }
+}
+
+const describeType = skill => {
+  if (skill.address === null) return 'local'
+  return skill.address === '' ? 'remote(空)' : 'remote'
+}
+
+const printList = async ({ skills, root, json }) => {
+  const rows = []
+  for (const skill of skills) {
+    const split = await pathExists(splitScript(root, skill.name))
+    const installed = []
+    for (const [tool, toolRoot] of Object.entries(TOOLS)) {
+      if (await pathExists(join(toolRoot, skill.name, 'SKILL.md'))) installed.push(tool)
+    }
+    const sourceText = skill.address === null ? skill.dir : (skill.address || '（git-addr 为空）')
+    rows.push({ name: skill.name, type: describeType(skill), split, installed, source: sourceText })
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ root, tools: TOOLS, skills: rows }, null, 2))
+    return
+  }
+
+  const installedText = row => (row.installed.length === 0 ? '-' : row.installed.length === Object.keys(TOOLS).length ? '全部' : row.installed.join(','))
+  // 中文字符按 2 列算，保证表格对齐
+  const displayWidth = text => [...text].reduce((sum, ch) => sum + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1), 0)
+  const pad = (text, width) => text + ' '.repeat(Math.max(0, width - displayWidth(text)))
+  const widths = {
+    name: Math.max(...rows.map(row => displayWidth(row.name)), displayWidth('技能')),
+    type: Math.max(...rows.map(row => displayWidth(row.type)), displayWidth('类型')),
+    kind: displayWidth('处理'),
+    installed: Math.max(...rows.map(row => displayWidth(installedText(row))), displayWidth('已装')),
+  }
+
+  console.log(`源目录: ${root}\n`)
+  console.log(`${pad('技能', widths.name)}  ${pad('类型', widths.type)}  ${pad('处理', widths.kind)}  ${pad('已装', widths.installed)}  来源`)
+  for (const row of rows) {
+    console.log(`${pad(row.name, widths.name)}  ${pad(row.type, widths.type)}  ${pad(row.split ? 'split' : 'copy', widths.kind)}  ${pad(installedText(row), widths.installed)}  ${row.source}`)
+  }
+  const remote = rows.filter(row => row.type.startsWith('remote')).length
+  console.log(`\n共 ${rows.length} 个技能：${remote} 个从 git 拉取，${rows.length - remote} 个本地。`)
 }
 
 const main = async () => {
@@ -206,7 +300,12 @@ const main = async () => {
     printUsage(USAGE)
     return
   }
-  if (rest.length > 0) usageFail(`多余的参数：${rest.join(' ')}（用 --help 查看用法）`)
+
+  const command = rest[0] ?? 'install'
+  if (rest.length > 1) usageFail(`多余的参数：${rest.slice(1).join(' ')}（选项要带 -- 前缀）`)
+  if (command !== 'install' && command !== 'list') {
+    usageFail(`未知命令 ${command}；可用：install（默认）、list`)
+  }
 
   const json = Boolean(flags['--json'])
   const dryRun = Boolean(flags['--dry-run'])
@@ -215,8 +314,26 @@ const main = async () => {
   const mode = flags['--mode'] ?? 'copy'
   if (mode !== 'copy' && mode !== 'link') usageFail(`--mode 只支持 copy 或 link，收到 ${mode}`)
 
-  const skillsRoot = expandHome(flags['--root'] ?? join(homedir(), 'skills'))
+  // 默认以脚本所在目录为技能源，仓库搬到哪都能用
+  const skillsRoot = expandHome(flags['--root'] ?? import.meta.dirname)
   const cacheDir = expandHome(flags['--cache'] ?? DEFAULT_CACHE)
+
+  const discovered = await discoverSkills(skillsRoot)
+  if (discovered.length === 0) {
+    fail(`${skillsRoot} 下没有可导入的技能（子目录里要有 git-addr 或 SKILL.md）`)
+  }
+
+  const only = parseList(flags['--only'] ?? '')
+  const known = discovered.map(skill => skill.name)
+  for (const name of only) {
+    if (!known.includes(name)) usageFail(`技能不存在：${name}；可选：${known.join(', ')}`)
+  }
+  const selected = only.length > 0 ? discovered.filter(skill => only.includes(skill.name)) : discovered
+
+  if (command === 'list') {
+    await printList({ skills: selected, root: skillsRoot, json })
+    return
+  }
 
   const requested = parseList(flags['--targets'] ?? 'all')
   const targets = requested.some(item => item === 'all') ? [...DEFAULT_TARGETS] : requested
@@ -230,21 +347,12 @@ const main = async () => {
     if (blocked.length > 0) usageFail(`link 模式只支持 dsh（其他工具不保证跟随软链）：${blocked.join(', ')}`)
   }
 
-  const discovered = await discoverSkills(skillsRoot)
-  const known = [...new Set([...discovered, ...Object.keys(REMOTE_SKILLS)])].sort()
+  const skills = selected
 
-  const requestedSkills = parseList(flags['--only'] ?? '')
-  const skills = requestedSkills.length > 0 ? requestedSkills : known
-  for (const skill of skills) {
-    if (!known.includes(skill)) usageFail(`技能 ${skill} 不存在；可选：${known.join(', ')}`)
-  }
-
-  const splitScript = skill => join(skillsRoot, `split-${skill}.mjs`)
-  const hasSplit = async skill => splitEnabled && await exists(splitScript(skill))
   if (mode === 'link') {
     const blocked = []
     for (const skill of skills) {
-      if (REMOTE_SKILLS[skill] !== undefined || await hasSplit(skill)) blocked.push(skill)
+      if (skill.address !== null || await pathExists(splitScript(skillsRoot, skill.name))) blocked.push(skill.name)
     }
     if (blocked.length > 0) usageFail(`这些技能没有可软链的本地源目录（远程拉取 / 拆层生成）：${blocked.join(', ')}`)
   }
@@ -252,41 +360,44 @@ const main = async () => {
   if (!json) {
     console.log(`本地源: ${skillsRoot}`)
     console.log(`缓存  : ${cacheDir}（远程技能每次安装重新拉取${noPull ? '；本次 --no-pull' : ''}）`)
-    console.log(`技能  : ${skills.join(', ')}`)
+    console.log(`技能  : ${skills.map(skill => skill.name).join(', ')}`)
     console.log(`目标  : ${targets.map(name => `${name} (${TOOLS[name]})`).join('\n         ')}`)
     console.log(`模式  : ${mode}${dryRun ? ' · dry-run（不联网、不落盘）' : ''}\n`)
   }
 
-  // 先把远程技能各拉一次（与装几家无关），拉取失败的技能后面按失败记。
-  const pulled = new Map()
+  // 先拉取所有远程技能（每个只拉一次，与装几家无关），拉取失败的技能后面按失败记。
+  const sources = new Map()
   for (const skill of skills) {
-    const remote = REMOTE_SKILLS[skill]
-    if (remote === undefined) continue
+    if (skill.address === null) {
+      sources.set(skill.name, { source: skill.dir, commit: null, via: 'local' })
+      continue
+    }
 
     if (dryRun) {
-      pulled.set(skill, { pending: true })
-      if (!json) console.log(`· 拉取 ${skill} ← ${remote.url} (${remote.branch})（dry-run 跳过）`)
+      sources.set(skill.name, { pending: true })
+      if (!json) console.log(`· 拉取 ${skill.name} ← ${skill.address || '（git-addr 为空）'}（dry-run 跳过）`)
       continue
     }
 
     try {
       if (noPull) {
-        const dir = join(cacheDir, skill)
-        if (!(await exists(join(dir, 'SKILL.md')))) {
-          fail(`--no-pull：缓存里没有 ${skill}，先不加 --no-pull 跑一次`)
+        const dir = join(cacheDir, skill.name)
+        if (!(await pathExists(join(dir, '.git')))) {
+          fail(`--no-pull：缓存里没有 ${skill.name}，先不加 --no-pull 跑一次`)
         }
         const commit = await git(['-C', dir, 'rev-parse', '--short', 'HEAD']).catch(() => 'unknown')
-        pulled.set(skill, { dir, source: join(dir, 'SKILL.md'), commit, via: 'cache' })
-        if (!json) console.log(`· 使用缓存 ${skill} ${commit} → ${dir}`)
+        const source = await resolveSkillRoot(dir)
+        sources.set(skill.name, { dir, source, commit, via: 'cache' })
+        if (!json) console.log(`· 使用缓存 ${skill.name} ${commit} → ${dir}`)
       } else {
         const info = await pullRemote(skill, cacheDir)
-        pulled.set(skill, info)
-        if (!json) console.log(`↓ 拉取 ${skill} ← ${remote.url} ${remote.branch} ${info.commit}（${info.via}）→ ${info.dir}`)
+        sources.set(skill.name, info)
+        if (!json) console.log(`↓ 拉取 ${skill.name} ← ${skill.address} ${info.commit}（${info.via}）→ ${info.dir}`)
       }
     } catch (error) {
       const message = error.stderr?.trim() || error.message
-      pulled.set(skill, { error: message })
-      if (!json) console.error(`✗ 拉取失败 ${skill}：${message}`)
+      sources.set(skill.name, { error: message })
+      if (!json) console.error(`✗ 拉取失败 ${skill.name}：${message}`)
     }
   }
   if (!json) console.log('')
@@ -298,49 +409,46 @@ const main = async () => {
   for (const target of targets) {
     const targetRoot = TOOLS[target]
     for (const skill of skills) {
-      const remote = REMOTE_SKILLS[skill] !== undefined
-      const pulledInfo = remote ? pulled.get(skill) : null
-      const destination = join(targetRoot, skill)
-      const kind = mode === 'link' ? 'link' : (await hasSplit(skill) ? 'split' : 'copy')
+      const info = sources.get(skill.name)
+      const destination = join(targetRoot, skill.name)
+      const split = splitEnabled && await pathExists(splitScript(skillsRoot, skill.name))
+      const kind = mode === 'link' ? 'link' : (split ? 'split' : 'copy')
 
       try {
-        if (remote && pulledInfo?.error) fail(`拉取失败：${pulledInfo.error}`)
+        if (info?.error) fail(`拉取失败：${info.error}`)
 
         if (dryRun) {
-          results.push({ tool: target, skill, kind, target: destination, ok: true, detail: 'dry-run' })
+          results.push({ tool: target, skill: skill.name, kind, target: destination, ok: true, detail: 'dry-run' })
           if (!json) {
-            const suffix = remote ? '（先拉取再装）' : ''
-            console.log(`· ${target.padEnd(10)} ${skill.padEnd(18)} ${kind.padEnd(5)} → ${destination}${suffix}`)
+            const suffix = skill.address === null ? '' : '（先拉取再装）'
+            console.log(`· ${target.padEnd(10)} ${skill.name.padEnd(18)} ${kind.padEnd(5)} → ${destination}${suffix}`)
           }
           continue
         }
 
         if (kind === 'split') {
-          const args = [splitScript(skill), '--root', skillsRoot, '--target-root', targetRoot, '--target', destination]
-          if (remote) args.push('--source', pulledInfo.source)
+          const args = [splitScript(skillsRoot, skill.name), '--root', skillsRoot, '--target-root', targetRoot, '--target', destination, '--source', join(info.source, 'SKILL.md')]
           const { stdout } = await run(process.execPath, args, { cwd: skillsRoot })
           await validate(destination)
-          results.push({ tool: target, skill, kind, target: destination, ok: true, detail: stdout.trim(), commit: pulledInfo?.commit })
-          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.padEnd(18)} split → ${destination}${pulledInfo ? ` (${pulledInfo.commit})` : ''}`)
+          results.push({ tool: target, skill: skill.name, kind, target: destination, ok: true, detail: stdout.trim(), commit: info.commit })
+          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.name.padEnd(18)} split → ${destination}${info.commit ? ` (${info.commit})` : ''}`)
         } else if (kind === 'link') {
-          const source = join(skillsRoot, skill)
-          await linkSkill(source, destination)
+          await linkSkill(info.source, destination)
           await validate(destination)
-          results.push({ tool: target, skill, kind, target: destination, ok: true, detail: `→ ${source}` })
-          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.padEnd(18)} link  → ${source}`)
+          results.push({ tool: target, skill: skill.name, kind, target: destination, ok: true, detail: `→ ${info.source}` })
+          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.name.padEnd(18)} link  → ${info.source}`)
         } else {
-          const source = remote ? pulledInfo.dir : join(skillsRoot, skill)
-          await copySkill(source, destination)
+          await copySkill(info.source, destination)
           await validate(destination)
-          results.push({ tool: target, skill, kind, target: destination, ok: true, detail: 'copied', commit: pulledInfo?.commit })
-          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.padEnd(18)} copy  → ${destination}`)
+          results.push({ tool: target, skill: skill.name, kind, target: destination, ok: true, detail: 'copied', commit: info.commit })
+          if (!json) console.log(`✓ ${target.padEnd(10)} ${skill.name.padEnd(18)} copy  → ${destination}${info.commit ? ` (${info.commit})` : ''}`)
         }
         installed += 1
       } catch (error) {
         failed += 1
         const message = error.stderr?.trim() || error.message
-        results.push({ tool: target, skill, kind, target: destination, ok: false, detail: message })
-        if (!json) console.error(`✗ ${target.padEnd(10)} ${skill.padEnd(18)} ${kind.padEnd(5)} ${message}`)
+        results.push({ tool: target, skill: skill.name, kind, target: destination, ok: false, detail: message })
+        if (!json) console.error(`✗ ${target.padEnd(10)} ${skill.name.padEnd(18)} ${kind.padEnd(5)} ${message}`)
       }
     }
     if (!json && !dryRun) console.log('')
@@ -354,8 +462,8 @@ const main = async () => {
     noPull,
     splitEnabled,
     targets,
-    skills,
-    pulled: [...pulled.entries()].map(([skill, info]) => ({ skill, ...info })),
+    skills: skills.map(skill => skill.name),
+    pulled: [...sources.entries()].map(([name, info]) => ({ name, ...info })),
     installed,
     failed,
     results,

@@ -3,10 +3,10 @@
  * 把上游单文件技能 global-stock-data（约 15 万字符）重新生成为按层拆分包。
  *
  * 用法:
- *   node ~/skills/split-global-stock-data.mjs                    # 生成并覆盖 ~/.dsh/skills/global-stock-data
- *   node ~/skills/split-global-stock-data.mjs --dry-run          # 只校验，不落盘
- *   node ~/skills/split-global-stock-data.mjs --target-root ~/.claude/skills
- *   node ~/skills/split-global-stock-data.mjs --help
+ *   node split-global-stock-data.mjs                    # 生成并覆盖 ~/.dsh/skills/global-stock-data
+ *   node split-global-stock-data.mjs --dry-run          # 只校验，不落盘
+ *   node split-global-stock-data.mjs --target-root ~/.claude/skills
+ *   node split-global-stock-data.mjs --help
  *
  * 行为与 split-a-stock-data.mjs 相同：只读上游 SKILL.md、全部校验通过后才原子替换目标目录、
  * 失败自动回滚、拼接结果与上游正文逐行比对；目标父目录不存在会自动创建。
@@ -20,13 +20,13 @@ import { expandHome, fail, parseFlags, pathExists, printUsage, reportError, usag
 const NAME = 'global-stock-data'
 
 const USAGE = `
-用法: node ~/skills/split-${NAME}.mjs [选项]
+用法: node split-${NAME}.mjs [选项]
 
 把上游单文件 SKILL.md 拆成「导航 SKILL.md + references/**」，并原子安装到目标目录。
 
 选项:
   --source <file>        上游 SKILL.md 路径（默认 <root>/${NAME}/SKILL.md）
-  --root <dir>           技能源根目录（默认 ~/skills）
+  --root <dir>           技能源根目录（默认脚本所在目录）
   --target-root <dir>    安装根目录（默认 ~/.dsh/skills）
   --target <dir>         精确安装目录（优先于 --target-root，默认 <target-root>/${NAME}）
   --name <name>          安装后的目录名与 frontmatter name（默认 ${NAME}）
@@ -34,8 +34,8 @@ const USAGE = `
   -h, --help             显示本帮助
 
 示例:
-  node ~/skills/split-${NAME}.mjs --dry-run
-  node ~/skills/split-${NAME}.mjs --target-root ~/.claude/skills
+  node split-${NAME}.mjs --dry-run
+  node split-${NAME}.mjs --target-root ~/.claude/skills
 `
 
 const DESCRIPTION = '需要取美股/港股及全球市场真实数据时使用：行情与K线（含日/台/韩/印/欧市场）、技术指标、基本面、资金流、CBOE期权链与0DTE·VIX期限结构、SEC EDGAR申报与全市场筛选、FINRA做空、央行利率与汇率、台股、EIA能源（15层50+端点，内嵌Python，每个源标注S/B/C/D合规级别）。分工只针对取数：westock CLI 已授权且覆盖该市场时优先用它；它未授权或没有该维度，或需要合规分级、官方源原始字段、自写抓取代码时用本 skill。非取数能力（合规分级、代码格式规则、备用源、数据口径）不受分工限制。'
@@ -63,13 +63,13 @@ const main = async () => {
   }
   if (rest.length > 0) usageFail(`多余的参数：${rest.join(' ')}（用 --help 查看用法）`)
 
-  const root = expandHome(flags['--root'] ?? join(homedir(), 'skills'))
+  const root = expandHome(flags['--root'] ?? import.meta.dirname)
   // 源目录可能只是空占位（上游克隆放在缓存里），两个位置都找：--source > <root>/<name> > 缓存
   const localSource = join(root, NAME, 'SKILL.md')
   const cachedSource = join(homedir(), '.cache', 'skills-src', NAME, 'SKILL.md')
   const source = expandHome(flags['--source'] ?? ((await pathExists(localSource)) ? localSource : cachedSource))
   if (!(await pathExists(source))) {
-    fail(`找不到上游 SKILL.md：${source}\n跑一次 node ~/skills/install-skills.mjs（会从 GitHub 拉到缓存），或用 --source 指定文件`)
+    fail(`找不到上游 SKILL.md：${source}\n跑一次 node install-skills.mjs（会从 GitHub 拉到缓存），或用 --source 指定文件`)
   }
   const installName = flags['--name'] ?? NAME
   const targetRoot = expandHome(flags['--target-root'] ?? join(homedir(), '.dsh', 'skills'))
@@ -172,14 +172,14 @@ name: ${installName}
 description: ${DESCRIPTION}
 whenToUse: ${WHEN_TO_USE}
 metadata:
-  upstream: https://github.com/simonlin1212/global-stock-data
+  upstream: git@github.com:simonlin1212/global-stock-data.git
   upstream-version: ${version}
   generated-by: split-global-stock-data.mjs
 ---
 
 # 美股港股全栈数据工具包 V${version}（按层拆分版）
 
-上游是一个自包含的单文件 skill（约 15 万字符）。全文一次性加载会占掉大半上下文，所以这里按原文标题机械拆开，**内容、代码、编号未改写**，只在 \`SKILL.md\` 里加了导航。本目录由 \`~/skills/split-global-stock-data.mjs\` 生成，请勿手改。
+上游是一个自包含的单文件 skill（约 15 万字符）。全文一次性加载会占掉大半上下文，所以这里按原文标题机械拆开，**内容、代码、编号未改写**，只在 \`SKILL.md\` 里加了导航。本目录由仓库里的 \`split-global-stock-data.mjs\` 生成，请勿手改。
 
 ## 使用方式
 

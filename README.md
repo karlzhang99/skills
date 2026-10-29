@@ -1,13 +1,28 @@
-# ~/skills — 金融数据技能源目录
+# ~/MyCode/skills — 金融数据技能源目录
 
-这个目录是技能的**源目录**，不是任何工具的安装点。`install-skills.mjs` 负责把这里的技能复制出去，默认 DSH / Codex / Claude Code / WorkBuddy 四家一起装。
+这个目录是技能的**源目录**，不是任何工具的安装点。`install-skills.mjs` 扫描这里每个子目录，把技能同步到 DSH / Codex / Claude Code / WorkBuddy 四家。
+
+技能目录有两种写法，脚本自动识别，**不写死技能名**：
+
+| 写法 | 例子 | 安装时做什么 |
+|---|---|---|
+| 目录里放 `git-addr`（一行 git 地址） | `a-stock-data/git-addr` | 拉到 `~/.cache/skills-src`，再从缓存同步 |
+| 目录里放 `SKILL.md` | `my-skill/` | 直接复制（`--mode link` 可软链到 dsh） |
+
+先看能导入什么：
+
+```bash
+node ~/MyCode/skills/install-skills.mjs list
+```
+
+当前四个技能：
 
 | 技能 | 本目录里的东西 | 装出去是什么 |
 |---|---|---|
-| `a-stock-data` | **空占位目录** + `split-a-stock-data.mjs` | **实体目录**，每次安装从 GitHub 拉取后拆成「导航 + references」 |
-| `global-stock-data` | **空占位目录** + `split-global-stock-data.mjs` | **实体目录**，同上 |
-| `chanlun` | 完整技能包（SKILL.md + references + scripts + tests） | **复制整包**（`--mode link` 可改回软链，仅 dsh） |
-| `westockdata` | 完整技能包（SKILL.md + references + scripts） | **复制整包**（同上） |
+| `a-stock-data` | `git-addr` + `split-a-stock-data.mjs` | **实体目录**，拉取后拆成「导航 + references」 |
+| `global-stock-data` | `git-addr` + `split-global-stock-data.mjs` | **实体目录**，同上 |
+| `chanlun` | `git-addr` | **复制整包**（仓库根就是技能包） |
+| `westockdata` | `git-addr` | **复制整包**（仓库根就是技能包，没有拆分脚本） |
 
 四家的技能目录：
 
@@ -18,8 +33,9 @@
 | Claude Code | `~/.claude/skills` | 重开会话 |
 | WorkBuddy | `~/.workbuddy/skills` | 重开 / 重启；复制时保留 `_skillhub_meta.json` 等 `_*` 元数据 |
 
-- 前两个的上游 `SKILL.md` 是 33 万 / 15 万字符的单文件，一次性加载会撑爆上下文，所以由脚本拆成「导航 + 按层 references」再安装。上游仓库不放在本目录：每次安装都从 GitHub 重新拉一次到 `~/.cache/skills-src`（拉完保留，下次 `fetch` 复用），`~/skills/a-stock-data`、`~/skills/global-stock-data` 永远是空目录。
-- 后两个本身就是标准 bundle，直接复制整包。默认 `copy`（各家一份，互不影响）；想要「改本目录即时生效」就 `--mode link`，只支持 dsh。
+- 带 `git-addr` 的技能：上游仓库不放在本目录，每次安装都重新拉一次到 `~/.cache/skills-src`（拉完保留，下次 `fetch` 复用），`~/MyCode/skills` 里只留一行地址。四个地址都是 SSH（`git@github.com:...`），需要本机 SSH key 已加到 GitHub。
+- 带 `SKILL.md` 的技能：直接复制整包。默认 `copy`（各家一份，互不影响）；想要「改本目录即时生效」就 `--mode link`，只支持 dsh。
+- `chanlun` / `westockdata` 的脚本在拉取缓存 `~/.cache/skills-src/<name>/` 里（已装到各工具的副本也有同样文件）；下文的 `python3 ~/.cache/skills-src/chanlun/scripts/...` 就是这么来的。
 
 ---
 
@@ -93,51 +109,51 @@ df.to_json("/tmp/chanlun/day.json", orient="records")
 ```bash
 # 或 westock kline + 转换器
 westock kline sh600519 --period day --limit 250 > /tmp/chanlun/day.md
-python3 ~/skills/chanlun/scripts/westock_kline_to_json.py /tmp/chanlun/day.md > /tmp/chanlun/day.json
+python3 ~/.cache/skills-src/chanlun/scripts/westock_kline_to_json.py /tmp/chanlun/day.md > /tmp/chanlun/day.json
 ```
 
 次级别数据（区间套，三买/三卖/二买确认用）：
 
 ```bash
 westock kline sh600519 --period m30 --start 2026-09-27 --end 2026-10-27 > /tmp/chanlun/m30.md
-python3 ~/skills/chanlun/scripts/westock_kline_to_json.py /tmp/chanlun/m30.md > /tmp/chanlun/m30.json
+python3 ~/.cache/skills-src/chanlun/scripts/westock_kline_to_json.py /tmp/chanlun/m30.md > /tmp/chanlun/m30.json
 ```
 
 分析：
 
 ```bash
 # 基础：线段级中枢 + 区间套确认
-python3 ~/skills/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json \
+python3 ~/.cache/skills-src/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json \
   --sub-level /tmp/chanlun/m30.json --name 贵州茅台 --out /tmp/chanlun/r.json
 
 # 短数据降级：250 根日线常凑不够 3 条线段，用笔级中枢（噪声更大）
-python3 ~/skills/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json --center-level stroke
+python3 ~/.cache/skills-src/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json --center-level stroke
 
 # 历史信号回溯：按首次识别记账，统计其后 20 根的表现
-python3 ~/skills/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json \
+python3 ~/.cache/skills-src/chanlun/scripts/chanlun_analyze.py /tmp/chanlun/day.json \
   --center-level stroke --history --history-horizon 20 \
   --history-fee 0.0005 --history-slippage 0.0005 --history-out /tmp/chanlun/trades.csv
 
 # 多标的批量扫描（同一套参数）
-python3 ~/skills/chanlun/scripts/batch_scan.py --symbols sh600519,hk00700 --fetch \
+python3 ~/.cache/skills-src/chanlun/scripts/batch_scan.py --symbols sh600519,hk00700 --fetch \
   --center-level stroke --history --out /tmp/chanlun/summary.csv
 
 # 参数敏感性网格
-python3 ~/skills/chanlun/scripts/param_sweep.py --dir /tmp/chanlun '*.json' \
+python3 ~/.cache/skills-src/chanlun/scripts/param_sweep.py --dir /tmp/chanlun '*.json' \
   --center-levels segment,stroke --horizons 10,20,30 \
   --out /tmp/chanlun/matrix.csv --detail-out /tmp/chanlun/detail.csv
 
 # 出图（自包含 SVG，含中枢树 L2）
-python3 ~/skills/chanlun/scripts/render_chart.py /tmp/chanlun/day.json \
+python3 ~/.cache/skills-src/chanlun/scripts/render_chart.py /tmp/chanlun/day.json \
   --center-level stroke --last 300 --out /tmp/chanlun/chart.svg \
   --html /tmp/chanlun/chart.html
 
 # 一键报告（HTML 自带图 + 表，另出 Markdown）
-python3 ~/skills/chanlun/scripts/make_report.py /tmp/chanlun/day.json \
+python3 ~/.cache/skills-src/chanlun/scripts/make_report.py /tmp/chanlun/day.json \
   --center-level stroke --sub-level /tmp/chanlun/m30.json --history \
   --title "贵州茅台 日线" --out /tmp/chanlun/report.html --md /tmp/chanlun/report.md
 
-python3 -m unittest discover -s ~/skills/chanlun/tests -v   # 改脚本后先跑（51 条）
+python3 -m unittest discover -s ~/.cache/skills-src/chanlun/tests -v   # 改脚本后先跑（51 条）
 ```
 
 **注意**：
@@ -201,7 +217,7 @@ westock screen condition                  # 选股
 - `global-stock-data`：S/B/C/D 合规分级与条款、代码格式规则、数据口径、备用源。
 - `chanlun`：分型/笔/中枢/背驰的判定流程本身。
 
-如果从上游覆盖更新了 `chanlun` / `westockdata` 的**源目录**，会丢掉分工句（`install-skills.mjs` 只是复制源目录，不会修这段）；原句如下，粘回 frontmatter 的 `description` 即可：
+`chanlun` / `westockdata` 都从上游仓库拉取，`install-skills.mjs` 只是原样复制上游技能包，不会补这段分工句。如果上游更新后 `description` 里的分工句丢了，要改**上游仓库并重新安装**（直接改 `~/.cache/skills-src/<name>/` 会被下次拉取覆盖，除非加 `--no-pull`）；原句如下：
 
 ```yaml
 # westockdata
@@ -218,35 +234,56 @@ description: 缠中说禅(缠论)技术分析框架。当用户要求分析股�
 ### 一条命令装四家
 
 ```bash
-node ~/skills/install-skills.mjs                  # dsh + codex + claude + workbuddy，全部技能
-node ~/skills/install-skills.mjs --dry-run        # 只看计划，不落盘
-node ~/skills/install-skills.mjs --targets dsh    # 只装一家（逗号分隔）
-node ~/skills/install-skills.mjs --only chanlun,westockdata
+node ~/MyCode/skills/install-skills.mjs                  # 遍历所有技能：拉取远程 + 同步到四家
+node ~/MyCode/skills/install-skills.mjs --dry-run        # 只看计划，不联网不落盘
+node ~/MyCode/skills/install-skills.mjs --targets dsh    # 只装一家（逗号分隔）
+node ~/MyCode/skills/install-skills.mjs --only chanlun   # 只处理指定技能；不存在直接报错
 ```
 
 `install-skills.mjs` 做的事：
 
-- 扫描 `~/skills/*/SKILL.md` 自动发现本地技能，目录名即技能名；远程技能按脚本里的 `REMOTE_SKILLS` 注册表补齐；
-- 远程技能（`a-stock-data` / `global-stock-data`）**每次安装都重新拉一次**：缓存里没有就 `git clone --depth 1`，有就 `git fetch --depth 1` + `reset --hard`，拉完保留在 `--cache`（默认 `~/.cache/skills-src`），下次接着复用；
-- 再调对应的 `split-*.mjs` 从缓存里的 `SKILL.md` 拆层安装（`--no-split` 可关掉，但单文件很大）；
-- 其余技能整包复制，跳过 `.git`、`__pycache__`、`.DS_Store`、`node_modules` 等；
+- 遍历 `--root`（默认脚本所在目录，也就是本仓库）下所有子目录，有 `git-addr` 或 `SKILL.md` 的才算技能，**没有任何技能名写死在脚本里**；
+- 远程技能**每次安装都重新拉一次**：缓存里没有就 `git clone --depth 1`，有就 `git fetch --depth 1 origin HEAD` + `reset --hard`；`git-addr` 改了指到别的仓库会检测到 origin 不一致并重新 clone。拉完保留在 `--cache`（默认 `~/.cache/skills-src`），下次接着复用；
+- 仓库根没有 `SKILL.md` 时自动找唯一的一级子目录当技能根；找不到或有多个直接报错；
+- 有 `split-<名字>.mjs` 的技能先从拉下来的 `SKILL.md` 拆层再装（`--no-split` 可关掉，但单文件很大）；
+- 本地技能整包复制，跳过 `.git`、`__pycache__`、`.DS_Store`、`node_modules` 等；
 - 目标已存在时先写 `.<name>.stage-<pid>`，再原子换名，失败回滚；目标若是软链只移链接，不会写穿到源目录；
 - 复制时保留目标里已有的 `_*` 文件（WorkBuddy 技能市场的 `_skillhub_meta.json`、`_icon.png`）；
 - 装完逐个校验 `SKILL.md` 的 `name` / `description`，有失败项时退出码为 1。
 
 某次拉取失败（网络问题）只影响该技能，其他技能照装，退出码为 1；离线时可用 `--no-pull` 直接吃上一次的缓存。
 
+### list：列出可导入的技能
+
+```bash
+node ~/MyCode/skills/install-skills.mjs list          # 技能 / 类型 / 处理方式 / 已装 / 来源
+node ~/MyCode/skills/install-skills.mjs list --json   # 机器可读
+```
+
+只读本地目录、不联网。`git-addr` 为空会标成 `remote(空)`；「已装」显示四家里装了几家，全装显示「全部」。
+
+### 新增一个技能
+
+```bash
+mkdir ~/MyCode/skills/my-skill
+echo git@github.com:me/my-skill.git > ~/MyCode/skills/my-skill/git-addr
+node ~/MyCode/skills/install-skills.mjs list            # 立刻出现在列表里
+node ~/MyCode/skills/install-skills.mjs --only my-skill
+```
+
+也可以直接把技能包放进 `~/MyCode/skills/my-skill/`（含 `SKILL.md`），脚本按本地技能处理。仓库根不是技能根也没关系，会自动找唯一的一级子目录。
+
 选项：
 
 | 参数 | 作用 |
 |---|---|
 | `--targets <list>` | `dsh` / `codex` / `claude` / `workbuddy`，逗号分隔；默认 `all` |
-| `--only <list>` | 只装指定技能，默认全部 |
-| `--root <dir>` | 本地技能源根目录，默认 `~/skills` |
+| `--only <list>` | 只处理指定技能，默认全部（`list` 也可用它筛选）；名字不存在直接报错（退出码 2） |
+| `--root <dir>` | 技能源根目录，默认脚本所在目录 |
 | `--cache <dir>` | 远程技能拉取目录，默认 `~/.cache/skills-src`（拉完保留） |
 | `--no-pull` | 不联网，直接用缓存里上次拉取的副本 |
-| `--mode <copy 或 link>` | 默认 `copy`；`link` 建软链（只有 dsh 支持，改源即时生效） |
-| `--no-split` | 不拆层，直接安装原包（远程技能会复制缓存里的仓库） |
+| `--mode <copy 或 link>` | 默认 `copy`；`link` 建软链（只有本地技能 + dsh 支持，改源即时生效） |
+| `--no-split` | 不拆层，直接安装原包 |
 | `--dry-run` / `--json` | 只打印计划、不联网不落盘 / 输出机器可读摘要 |
 
 不需要改 `cordis.yml`、不需要重启 `dsh web`：`~/.dsh/skills` 是内置扫描根，目录监听会自动刷新 catalog。Codex / Claude Code / WorkBuddy 重开会话后生效。
@@ -258,7 +295,7 @@ node ~/skills/install-skills.mjs --only chanlun,westockdata
 | 参数 | 作用 |
 |---|---|
 | `--source <file>` | 上游 `SKILL.md` 路径 |
-| `--root <dir>` | 技能源根目录，默认 `~/skills` |
+| `--root <dir>` | 技能源根目录，默认脚本所在目录 |
 | `--target-root <dir>` | 安装根目录，默认 `~/.dsh/skills` |
 | `--target <dir>` | 精确安装目录，优先于 `--target-root` |
 | `--name <name>` | 安装后的目录名与 frontmatter `name` |
@@ -266,27 +303,29 @@ node ~/skills/install-skills.mjs --only chanlun,westockdata
 | `-h, --help` | 用法 |
 
 ```bash
-node ~/skills/split-a-stock-data.mjs --dry-run
-node ~/skills/split-a-stock-data.mjs --target-root ~/.codex/skills
-node ~/skills/split-global-stock-data.mjs --target /tmp/skills/global-stock-data
+node ~/MyCode/skills/split-a-stock-data.mjs --dry-run
+node ~/MyCode/skills/split-a-stock-data.mjs --target-root ~/.codex/skills
+node ~/MyCode/skills/split-global-stock-data.mjs --target /tmp/skills/global-stock-data
 ```
 
-源文件按 `--source` → `~/skills/<name>/SKILL.md` → `~/.cache/skills-src/<name>/SKILL.md` 的顺序找；两个本地目录是空的，所以直接跑拆分脚本会用上一次安装拉下来的缓存（想更新先跑一次 `install-skills.mjs`）。
+源文件按 `--source` → `~/MyCode/skills/<name>/SKILL.md` → `~/.cache/skills-src/<name>/SKILL.md` 的顺序找；`~/MyCode/skills` 里只有 `git-addr`，所以直接跑拆分脚本会用上一次安装拉下来的缓存（想更新先跑一次 `install-skills.mjs`）。
 
 生成脚本的保障：上游改了章节结构会直接报 `结构已变，未改动目标目录` 并保留上一版；写盘用暂存目录 + 原子换名，失败回滚；生成后会拼回原文逐行比对。目标目录若落在源目录里会直接拒绝。三个脚本共用的参数解析与路径工具在 `lib/cli.mjs`。
 
 ### 升级
 
 ```bash
-# a-stock / global：不用手动拉，重跑安装脚本会自动 fetch 最新（每次都重新拉）
-node ~/skills/install-skills.mjs
+# 所有带 git-addr 的技能：重跑安装脚本，会逐个 fetch 最新（每次都重新拉）
+node ~/MyCode/skills/install-skills.mjs
 
-# chanlun / westockdata：先覆盖源目录，再统一装
-cp -R <新版本>/* ~/skills/chanlun/
-node ~/skills/install-skills.mjs
+# westockdata 也是 git-addr 技能，和 chanlun 一样重跑安装脚本即可
+node ~/MyCode/skills/install-skills.mjs --only westockdata
+
+# 本地技能（目录里有 SKILL.md）：源目录改完直接重跑，copy 模式会覆盖安装副本
+node ~/MyCode/skills/install-skills.mjs --only <name>
 
 # westock CLI 自身升级（必须用 openssl 3，见下）
-PATH=/usr/local/opt/openssl@3/bin:$PATH bash ~/skills/westockdata/scripts/setup.sh
+PATH=/usr/local/opt/openssl@3/bin:$PATH bash ~/.cache/skills-src/westockdata/scripts/setup.sh
 ```
 
 ### 卸载 / 回滚
@@ -298,11 +337,11 @@ rm -rf ~/.dsh/skills/chanlun ~/.codex/skills/chanlun ~/.claude/skills/chanlun ~/
 # --mode link 装的是软链，rm 只删链接
 rm ~/.dsh/skills/chanlun
 
-# 想连远程缓存一起清掉（下次安装会重新 clone）
+# 想连拉取缓存一起清掉（下次安装会重新 clone）
 rm -rf ~/.cache/skills-src
 ```
 
-装错了直接重跑 `install-skills.mjs` 覆盖即可（脚本幂等）；远程技能要回滚到旧版本，可以 `git -C ~/.cache/skills-src/a-stock-data checkout <旧commit>` 后加 `--no-pull` 安装。
+装错了直接重跑 `install-skills.mjs` 覆盖即可（脚本幂等）；远程技能要回滚到旧版本，可以 `git -C ~/.cache/skills-src/<name> checkout <旧commit>` 后加 `--no-pull` 安装。
 
 ---
 
@@ -314,6 +353,9 @@ rm -rf ~/.cache/skills-src
 | Codex / Claude Code / WorkBuddy 里看不到新技能 | 先 `ls ~/.codex/skills` 等确认已装（`install-skills.mjs` 默认四家都装），再重开会话；这三家不保证跟随软链，别用 `--mode link` 装过去 |
 | `westock` 报 `AUTH_REQUIRED:<url>` | 系统浏览器打开链接 → `westock auth fetch --wait 300`；链接 5 分钟有效，过期重跑 `westock auth status` 拿新链接 |
 | 安装时报 `拉取失败 … unable to access` | 远程技能每次安装都要联网拉 GitHub。检查网络 / 代理后重跑；临时离线用 `--no-pull` 吃缓存 |
+| 安装时报 `Permission denied (publickey)` | `git-addr` 用的是 SSH 地址，先 `ssh -T git@github.com` 确认 key 已加到 GitHub；没有 key 就把 `git-addr` 临时改回 HTTPS 地址 |
+| `list` 里出现 `remote(空)` 或安装报 `git-addr 是空的` | `~/MyCode/skills/<name>/git-addr` 是空文件或只剩注释，写入一行 git 地址即可 |
+| `--only` 写错技能名 | 直接报 `技能不存在：xxx` 并列出可选技能（退出码 2）；先 `list` 看准确名字 |
 | setup.sh 报"签名缺失或无效，疑似发布物被篡改" | 环境里是 OpenSSL 1.1.1（没有 `pkeyutl -rawin`）导致误判，不是发布物问题。用 `PATH=/usr/local/opt/openssl@3/bin:$PATH` 重跑 |
 | 加载大技能后回答被截断 | 工具结果超过 8192 字符时，压缩触发后会被裁成"前 4096 + 后 1024"。`a-stock-data` / `global-stock-data` 已拆层，按需只读一个 reference；不要让模型整目录通读 |
 | 改了 `SKILL.md` 但模型还看到旧描述 | catalog 按 `name+description` 摘要判断是否重发；等一次目录刷新（约 2 秒写稳定窗口），或新开会话 |
@@ -323,11 +365,12 @@ rm -rf ~/.cache/skills-src
 ## 五、验证清单
 
 ```bash
-node ~/skills/install-skills.mjs --dry-run         # 四家 × 四个技能的计划
+node ~/MyCode/skills/install-skills.mjs list              # 技能 / 类型 / 处理 / 已装 / 来源
+node ~/MyCode/skills/install-skills.mjs --dry-run         # 四家 × 全部技能的计划
 ls ~/.dsh/skills ~/.codex/skills ~/.claude/skills ~/.workbuddy/skills   # 都应各有四个实体目录
-ls -la ~/skills/a-stock-data ~/skills/global-stock-data   # 应为空目录（上游只在缓存里）
-du -sh ~/.cache/skills-src/*                              # 拉取缓存
-node ~/skills/split-a-stock-data.mjs --dry-run     # 结构 / 无损校验
+ls ~/MyCode/skills/a-stock-data ~/MyCode/skills/global-stock-data ~/MyCode/skills/chanlun ~/MyCode/skills/westockdata    # 应只有 git-addr
+du -sh ~/.cache/skills-src/*                              # 拉取缓存（每个远程技能一个仓库）
+node ~/MyCode/skills/split-a-stock-data.mjs --dry-run     # 结构 / 无损校验
 westock auth status                                # READY
 westock quote sh600519                             # 真实行情
 ```
