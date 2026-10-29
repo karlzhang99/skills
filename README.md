@@ -9,11 +9,14 @@
 | 目录里放 `git-addr`（一行 git 地址） | `a-stock-data/git-addr` | 拉到 `~/.cache/skills-src`，再从缓存同步 |
 | 目录里放 `SKILL.md` | `my-skill/` | 直接复制（`--mode link` 可软链到 dsh） |
 
-先看能导入什么：
+先看能导入什么，再装到四家：
 
 ```bash
-node ~/MyCode/skills/install-skills.mjs list
+node ~/MyCode/skills/install-skills.mjs list   # 列出可导入的技能（只读本地，不联网）
+node ~/MyCode/skills/install-skills.mjs        # 拉取并安装到四家
 ```
+
+首次安装、升级、改了 `git-addr`（比如 HTTPS 换 SSH）都跑第二条；缓存里的 origin 与 `git-addr` 不一致时会自动重新 clone。
 
 当前四个技能：
 
